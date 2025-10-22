@@ -1,0 +1,1659 @@
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { ShoppingCart, Minus, Plus, X, Utensils, Beer, Flame, Zap, CheckCircle, Clock, History, Bell, Menu, Tag, Package, Hash, Coffee, Settings, Lock, Delete } from 'lucide-react';
+// Firebase imports
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, addDoc, query, onSnapshot, serverTimestamp, doc, getDoc, setDoc } from 'firebase/firestore'; 
+
+// ======================================================================
+// 1. DATA: Menu Items (메뉴 데이터)
+// ======================================================================
+const menuData = [
+  {
+    id: 'main_dish',
+    name: '메인 메뉴', 
+    icon: Flame,
+    items: [
+      { id: '1-1', name: '삼겹살 (180g)', price: 12000, desc: '육즙 가득! 돼랑이네 시그니처 메뉴', img: 'uploaded:image_c941a0.jpg' },
+      { id: '1-2', name: '돼지갈비 (250g)', price: 8900, desc: '달콤한 특제 양념에 재운 갈비', img: 'uploaded:image_c9417e.jpg', minQuantity: 2 }, // 최소 수량 유지
+      { id: '1-3', name: '바다장어 (200g)', price: 12000, desc: '힘이 불끈! 싱싱한 바다장어 구이', img: 'uploaded:image_c941ba.jpg' },
+    ],
+  },
+  {
+    id: 'sides',
+    name: '사이드 메뉴', 
+    icon: Utensils,
+    items: [
+      { id: '2-1', name: '물냉면', price: 5000, desc: '시원한 살얼음 육수와 쫄깃한 면발', img: 'uploaded:image_c941de.jpg' },
+      { id: '2-2', name: '비빔냉면', price: 5000, desc: '매콤한 양념과 쫄깃한 면발', img: 'uploaded:image_c941de.jpg' },
+      { id: '2-3', name: '된장찌개', price: 2000, desc: '두부와 호박이 가득한 구수한 전통 된장찌개', img: 'uploaded:image_c941bf.jpg' },
+      { id: '2-4', name: '꽃새라면', price: 5000, desc: '꽃게와 새우가 통째로 들어간 얼큰한 해물 라면', img: 'uploaded:image_c94182.jpg' },
+      { id: '2-5', name: '계란찜', price: 2000, desc: '뚝배기에 폭신하게 끓여낸 부드러운 계란찜', img: 'uploaded:image_c9419c.jpg' },
+      { id: '2-6', name: '공기밥', price: 1000, desc: '', img: 'https://placehold.co/120x120/60A5FA/ffffff?text=밥' },
+    ],
+  },
+  {
+    id: 'alcohol', 
+    name: '주류',
+    icon: Beer,
+    items: [
+      { id: '3-1', name: '소주', price: 5000, desc: '', img: 'https://placehold.co/120x120/34D399/ffffff?text=소주' },
+      { id: '3-2', name: '맥주', price: 5000, desc: '', img: 'https://placehold.co/120x120/34D399/ffffff?text=맥주' },
+    ],
+  },
+  {
+    id: 'beverage', 
+    name: '음료',
+    icon: Coffee, 
+    items: [
+      { id: '4-1', name: '콜라/사이다', price: 2000, desc: '', img: 'https://placehold.co/120x120/34D399/ffffff?text=음료' },
+    ],
+  },
+];
+
+
+// ======================================================================
+// 2. NEW COMPONENTS: Numeric Keypad
+// ======================================================================
+
+/**
+ * 커스텀 숫자 키패드 컴포넌트
+ */
+const NumericKeypad = ({ onKeyPress }) => {
+    const keys = [
+        '1', '2', '3',
+        '4', '5', '6',
+        '7', '8', '9',
+        '', '0', 'DEL' 
+    ];
+
+    return (
+        <div className="grid grid-cols-3 gap-3">
+            {keys.map((key) => (
+                <button
+                    key={key}
+                    onClick={() => onKeyPress(key)}
+                    disabled={key === ''}
+                    className={`
+                        w-full aspect-square text-3xl font-bold rounded-xl transition-all shadow-md
+                        ${key === 'DEL' 
+                            ? 'bg-gray-300 text-gray-700 hover:bg-gray-400 active:scale-[0.98]'
+                            : key === '' 
+                                ? 'bg-white cursor-default shadow-none'
+                                : 'bg-white text-gray-800 hover:bg-red-50 active:scale-[0.98]'
+                        }
+                        disabled:opacity-0 disabled:pointer-events-none
+                    `}
+                >
+                    {key === 'DEL' ? <Delete className="w-8 h-8 mx-auto" /> : key}
+                </button>
+            ))}
+        </div>
+    );
+};
+
+
+// ======================================================================
+// 3. COMPONENTS (MODIFIED)
+// ======================================================================
+
+/**
+ * 테이블 번호 또는 PIN 텍스트 입력 필드 래퍼 (SettingsModal에서 사용)
+ * Note: 이 컴포넌트는 커스텀 키패드가 필요 없는 일반 텍스트 입력에 사용됨.
+ */
+const SimpleInputWrapper = ({ value, setter, placeholder, isPin = false, maxLength = 4, isError = false }) => {
+    
+    return (
+        <input
+            type={isPin ? "password" : "tel"} // type="tel"로 모바일 숫자 키보드 유도
+            readOnly={false} 
+            maxLength={maxLength}
+            value={value}
+            onChange={(e) => {
+                const newValue = e.target.value.replace(/[^0-9]/g, '');
+                setter(newValue.slice(0, maxLength));
+            }}
+            inputMode="numeric" 
+            className={`w-full p-3 border-2 rounded-lg text-lg transition-colors 
+                ${isError ? 'border-red-500 ring-red-200' : 'border-gray-300 focus:border-red-500 focus:ring-red-200 focus:ring-4'}
+                mt-1`}
+            placeholder={placeholder}
+        />
+    );
+};
+
+
+/**
+ * PIN 입력 모달 컴포넌트 (커스텀 키패드 적용)
+ */
+const PinEntryModal = ({ isVisible, currentPin, onVerify, onClose }) => {
+    if (!isVisible) return null;
+    
+    const MAX_LENGTH = 4;
+    const [pinInput, setPinInput] = useState('');
+    const [error, setError] = useState('');
+    const verificationTimeout = useRef(null); // 타이머 참조 추가
+
+    // PIN 입력 처리 로직 (즉시 호출되지 않도록 분리)
+    const handlePinVerification = useCallback((pin) => {
+        setError('');
+        if (pin === currentPin) {
+            setPinInput('');
+            onVerify();
+        } else {
+            // 실패 시 에러 메시지 표시 후, 잠시 후 PIN 초기화
+            setError('비밀번호가 일치하지 않습니다.');
+            // 500ms 후 PIN 필드 초기화 (시각적 피드백 제공)
+            verificationTimeout.current = setTimeout(() => {
+                setPinInput('');
+                setError('');
+            }, 500); 
+        }
+    }, [currentPin, onVerify]);
+
+    // 키패드에서 키를 눌렀을 때 핸들러
+    const handleKeypadPress = useCallback((key) => {
+        // 기존의 verification timeout이 있다면 클리어
+        if (verificationTimeout.current) {
+            clearTimeout(verificationTimeout.current);
+            verificationTimeout.current = null;
+        }
+
+        if (error) setError('');
+        
+        setPinInput(prevPin => {
+            let newPin = prevPin;
+            
+            if (key === 'DEL') {
+                newPin = prevPin.slice(0, -1);
+            } else if (key.length === 1 && key >= '0' && key <= '9') {
+                if (prevPin.length < MAX_LENGTH) {
+                    newPin = prevPin + key;
+                }
+            }
+            
+            // PIN 입력이 완료되면 검증 로직 호출 (상태 업데이트는 비동기적으로 진행)
+            if (newPin.length === MAX_LENGTH) {
+                // 다음 틱에서 검증 로직을 실행하여 렌더링 중 상태 업데이트를 방지
+                setTimeout(() => handlePinVerification(newPin), 0);
+            }
+            
+            // PIN 입력이 완료되면 현재 PIN을 유지하고 DEL이 아니면 업데이트를 막음.
+            // 하지만 새 PIN은 4자리가 되기 전까지만 업데이트
+            if (newPin.length === MAX_LENGTH && key !== 'DEL') {
+                return prevPin; // 4자리가 채워지면 새로운 입력 무시
+            }
+            return newPin;
+        });
+    }, [error, handlePinVerification]);
+
+
+    // 모달이 열릴 때마다 PIN 초기화
+    useEffect(() => {
+        if (isVisible) {
+            setPinInput('');
+            setError('');
+            // 클린업: 모달이 닫히거나 재오픈될 때 타임아웃 제거
+            return () => {
+                if (verificationTimeout.current) {
+                    clearTimeout(verificationTimeout.current);
+                    verificationTimeout.current = null;
+                }
+            };
+        }
+    }, [isVisible]);
+
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-2xl w-full max-w-md p-8 shadow-2xl relative text-center flex flex-col items-center">
+                
+                <button onClick={onClose} className="absolute top-4 right-4 text-gray-400 hover:text-gray-700">
+                    <X className="w-6 h-6" />
+                </button>
+
+                <Lock className="w-10 h-10 text-red-500 mx-auto mb-4" />
+                <h2 className="text-2xl font-bold text-gray-800 mb-2">관리자 비밀번호 입력</h2>
+                <p className="text-sm text-gray-500 mb-6">4자리 관리자 비밀번호를 입력하세요.</p>
+                
+                {/* Visual PIN Display */}
+                <div className="flex justify-center space-x-4 mb-4">
+                    {Array.from({ length: MAX_LENGTH }).map((_, index) => (
+                        <div 
+                            key={index} 
+                            className={`w-10 h-10 border-2 rounded-full flex items-center justify-center text-2xl transition-all duration-150
+                                ${error 
+                                    ? 'border-red-500 bg-red-100 text-red-500' 
+                                    : index < pinInput.length 
+                                        ? 'border-red-500 bg-red-500 text-white' 
+                                        : 'border-gray-300 bg-gray-100'
+                                }
+                            `}
+                        >
+                            {index < pinInput.length ? '●' : ''}
+                        </div>
+                    ))}
+                </div>
+                
+                {error && (
+                    <p className="text-red-500 text-sm font-semibold mt-2 mb-4">{error}</p>
+                )}
+
+                {/* Custom Numeric Keypad */}
+                <div className="w-full max-w-xs mt-4">
+                    <NumericKeypad onKeyPress={handleKeypadPress} />
+                </div>
+                
+                <button
+                    onClick={onClose}
+                    className="w-full py-3 bg-gray-200 text-gray-700 font-bold rounded-xl hover:bg-gray-300 transition-colors mt-6"
+                >
+                    취소
+                </button>
+            </div>
+        </div>
+    );
+};
+
+
+/**
+ * 주문 성공 및 호출 알림 모달
+ */
+const SuccessModal = ({ isVisible, message, icon: Icon, iconColor }) => {
+    if (!isVisible) return null;
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center z-50 transition-opacity duration-300">
+            <div className="bg-white rounded-2xl p-10 shadow-2xl transform transition-transform duration-300 scale-100 text-center w-full max-w-sm">
+                <Icon className={`w-16 h-16 ${iconColor} mx-auto mb-4`} />
+                <h2 className="text-3xl font-bold text-gray-800 mb-2">{message}</h2>
+                {Icon === CheckCircle && <p className="text-lg text-gray-600">주문 내역을 주방에 전달했습니다.</p>}
+                {Icon === Bell && <p className="text-lg text-gray-600">직원이 곧 테이블로 찾아뵙겠습니다.</p>}
+                
+            </div>
+            
+        </div>
+    );
+};
+
+
+/**
+ * 메뉴 아이템 카드 (클릭 시 즉시 주문 또는 모달 오픈 로직 포함)
+ */
+const MenuItemCard = ({ item, onOpenModal, onQuickAdd }) => {
+    const getImageUrl = (img) => {
+        if (img && img.startsWith('uploaded:')) {
+            return img; 
+        }
+        return img;
+    };
+
+    const imageUrl = getImageUrl(item.img);
+    const isMinOrderRequired = item.minQuantity && item.minQuantity > 1;
+
+    // 메뉴 카드 클릭 핸들러: 최소 수량 필요 여부에 따라 분기 (퀵 추가)
+    const handleCardClick = () => {
+        if (isMinOrderRequired) {
+            // 최소 수량이 필요한 경우 (예: 돼지갈비 2인분 이상), 모달을 열어 수량 선택 유도
+            onOpenModal(item);
+        } else {
+            // 그 외 메뉴는 클릭 시 즉시 1개 추가
+            onQuickAdd(item);
+        }
+    };
+    
+    // + 버튼 클릭 핸들러: 무조건 모달 오픈
+    const handlePlusClick = (e) => {
+        e.stopPropagation(); // 카드 전체 클릭 이벤트와의 중복 방지
+        onOpenModal(item); // **요청대로, + 버튼 클릭 시 무조건 상세 모달 열기**
+    };
+
+    return (
+        // 카드 전체 영역 클릭 시 handleCardClick 실행
+        <div
+            onClick={handleCardClick} 
+            className="flex flex-row items-center p-3 bg-white border border-gray-200 rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 cursor-pointer active:scale-[0.98] transform"
+        >
+            <div className="w-24 h-24 bg-gray-100 rounded-lg overflow-hidden flex-shrink-0">
+                <img
+                    src={imageUrl} 
+                    alt={item.name}
+                    className="w-full h-full object-cover"
+                    onError={(e) => { 
+                        e.target.onerror = null; 
+                        e.target.src = 'https://placehold.co/400x400/cccccc/333333?text=NO+IMG';
+                    }}
+                />
+            </div>
+            
+            <div className='flex-grow ml-4 min-w-0'>
+                <div className="flex justify-between items-start mb-1">
+                    <h3 className="text-xl font-bold text-gray-800 truncate">{item.name}</h3>
+                    {isMinOrderRequired && (
+                        <span className="flex-shrink-0 bg-pink-500 text-white text-xs font-bold px-2 py-0.5 rounded-full shadow-md ml-2">
+                            {item.minQuantity}인분 이상
+                        </span>
+                    )}
+                </div>
+                
+                <p className="text-sm text-gray-500 overflow-hidden line-clamp-2 mb-2">{item.desc}</p>
+                
+                <div className="flex justify-between items-center pt-2 border-t border-gray-100">
+                    <span className="text-2xl font-extrabold text-red-600">{item.price.toLocaleString()}원</span>
+                    <div 
+                        onClick={handlePlusClick} // + 버튼 클릭 시 무조건 모달 오픈
+                        className="bg-red-500 text-white w-8 h-8 rounded-full flex items-center justify-center transition-colors hover:bg-red-600"
+                    >
+                        <Plus className="w-4 h-4" />
+                    </div>
+                </div>
+                
+            </div>
+        </div>
+    );
+};
+
+
+/**
+ * 메뉴 상세 모달 컴포넌트
+ */
+const MenuDetailModal = ({ item, onClose, onAddToOrder }) => {
+    if (!item) return null;
+
+    const minQ = item.minQuantity || 1;
+    const [quantity, setQuantity] = useState(minQ);
+
+    const handleQuantityChange = (delta) => {
+        setQuantity(prevQ => {
+            const newQ = prevQ + delta;
+            if (newQ < minQ) {
+                return minQ;
+            }
+            return newQ;
+        });
+    };
+
+    const handleConfirmOrder = () => {
+        onAddToOrder(item, quantity);
+        onClose();
+    };
+
+    const getImageUrl = (img) => {
+        if (img && img.startsWith('uploaded:')) {
+            return img; 
+        }
+        return img;
+    };
+
+    const imageUrl = getImageUrl(item.img);
+    const totalPrice = item.price * quantity;
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden shadow-2xl flex relative">
+                
+                {/* 닫기 버튼 */}
+                <button 
+                    onClick={onClose} 
+                    className="absolute top-4 right-4 bg-white p-2 rounded-full shadow-lg hover:bg-gray-100 transition-colors z-10"
+                >
+                    <X className="w-6 h-6 text-gray-700" />
+                </button>
+
+                {/* 메뉴 이미지 (왼쪽) */}
+                <div className="w-1/2 p-6 flex items-center justify-center bg-gray-50">
+                    <div className="w-full h-full max-w-md max-h-md overflow-hidden rounded-xl shadow-xl">
+                        <img 
+                            src={imageUrl} 
+                            alt={item.name}
+                            className="w-full h-full object-cover"
+                            onError={(e) => { 
+                                e.target.onerror = null; 
+                                e.target.src = 'https://placehold.co/400x400/cccccc/333333?text=NO+IMG';
+                            }}
+                        />
+                    </div>
+                </div>
+
+                {/* 메뉴 상세 및 주문 (오른쪽) */}
+                <div className="w-1/2 p-8 flex flex-col justify-between">
+                    <div>
+                        <h2 className="text-4xl font-extrabold text-gray-900 mb-2">{item.name}</h2>
+                        <p className="text-2xl font-bold text-red-600 mb-6">{item.price.toLocaleString()}원</p>
+                        
+                        <p className="text-lg text-gray-700 leading-relaxed border-t border-b py-6 mb-8">
+                            {item.desc || "메뉴에 대한 상세 설명이 준비 중입니다."}
+                        </p>
+
+                        {minQ > 1 && (
+                            <div className="flex items-center text-red-500 font-bold mb-4">
+                                <Zap className="w-5 h-5 mr-2" />
+                                <span>최소 {minQ}인분 이상 주문 가능 메뉴입니다.</span>
+                            </div>
+                        )}
+                    </div>
+                    
+                    {/* 수량 조절 및 주문 버튼 */}
+                    <div className="mt-auto">
+                        <div className="flex justify-between items-center mb-6 p-4 bg-gray-100 rounded-xl shadow-inner">
+                            <span className="text-xl font-bold text-gray-700">총 주문 금액</span>
+                            <span className="text-3xl font-extrabold text-red-600">{totalPrice.toLocaleString()}원</span>
+                        </div>
+
+                        <div className="flex space-x-4">
+                            {/* 수량 조절 버튼 */}
+                            <div className="flex items-center border-2 border-red-500 rounded-full w-1/3 min-w-[150px] overflow-hidden">
+                                <button
+                                    onClick={() => handleQuantityChange(-1)}
+                                    className="p-3 bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 transition-colors"
+                                    disabled={quantity <= minQ}
+                                >
+                                    <Minus className="w-6 h-6" />
+                                </button>
+                                <span className="flex-1 text-center text-2xl font-bold text-gray-800">{quantity}</span>
+                                <button
+                                    onClick={() => handleQuantityChange(1)}
+                                    className="p-3 bg-red-500 text-white hover:bg-red-600 transition-colors"
+                                >
+                                    <Plus className="w-6 h-6" />
+                                </button>
+                            </div>
+
+                            {/* 주문 담기 버튼 */}
+                            <button
+                                onClick={handleConfirmOrder}
+                                className="flex-1 py-4 text-white text-2xl font-bold rounded-full bg-red-500 hover:bg-red-600 transition-all shadow-lg shadow-red-400/50 transform active:scale-[0.99]"
+                            >
+                                <ShoppingCart className="w-6 h-6 inline mr-3" />
+                                주문 담기
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+
+/**
+ * 카테고리 목록 (왼쪽 사이드바 - 메인 메뉴)
+ */
+const CategoryList = ({ activeCategory, menuData, scrollToCategory, onUtilityClick }) => (
+  <nav className="flex flex-col p-2 flex-grow overflow-y-auto custom-scrollbar"> 
+    {menuData.map(category => {
+      const theCategory = category;
+      const isActive = activeCategory === theCategory.id;
+      const Icon = theCategory.icon;
+      return (
+        <button
+          key={theCategory.id}
+          onClick={() => {
+            scrollToCategory(theCategory.id);
+            onUtilityClick(null); 
+          }}
+          className={`flex items-center p-1 mb-1 rounded-xl text-sm font-semibold transition-all duration-200 ease-in-out ${ // text-sm으로 크기 조정
+            isActive
+              ? 'bg-red-600 text-white shadow-lg shadow-red-300 transform scale-[1.02]'
+              : 'text-gray-600 hover:bg-red-100 hover:text-red-600'
+          }`}
+        >
+          <Icon className="w-4 h-4 mr-1" /> 
+          {theCategory.name}
+        </button>
+      );
+    })}
+  </nav>
+);
+
+// --- 새로운 유틸리티 컴포넌트들 (직원 호출, 주문 내역) ---
+
+const StaffCallDetail = ({ handleStaffCall }) => {
+    const callRequests = [
+        { key: 'fire', label: '불 빼주세요', icon: Flame, color: 'text-orange-500', desc: '화력 조절이나 불판 교체 요청' },
+        { key: 'plate', label: '불판 갈아주세요', icon: Utensils, color: 'text-gray-500', desc: '불판 교체가 필요한 경우' },
+        { key: 'review', label: '네이버 영수증 리뷰 참여', icon: CheckCircle, color: 'text-green-500', desc: '리뷰 참여를 위한 영수증 요청' },
+        { key: 'water', label: '물 / 추가 반찬 요청',icon: Package, color: 'text-blue-500', desc: '물이나 기본 반찬 리필 요청' },
+    ];
+    return (
+        <div className="w-full h-full flex flex-col overflow-y-auto p-4">
+            <h2 className="text-4xl font-extrabold text-gray-800 border-b-4 border-yellow-500 pb-3 mb-6 inline-block">
+                직원 호출
+            </h2>
+            <div className="grid grid-cols-2 gap-4"> 
+                {callRequests.map(req => (
+                    <button
+                        key={req.key}
+                        onClick={() => handleStaffCall(req.label)}
+                        className='flex flex-col items-center justify-center p-4 bg-white rounded-xl border-2 border-gray-200 hover:bg-yellow-50 transition-all active:scale-[0.98] h-36 shadow-md' 
+                    >
+                        <req.icon className={`w-7 h-7 mb-1 ${req.color}`} /> 
+                        <span className='text-base font-bold text-gray-800 mb-0.5'>{req.label}</span> 
+                        <span className='text-xs text-gray-500 text-center'>{req.desc}</span> 
+                    </button>
+                ))}
+            </div>
+            <p className="mt-8 text-center text-gray-500 text-base"> 
+                원하시는 항목을 터치하시면 직원이 곧 테이블로 찾아뵙겠습니다.
+            </p>
+        </div>
+    );
+};
+
+/**
+ * 관리자 설정 화면 (메인 영역에 대체되어 렌더링)
+ */
+const SettingsDetail = ({ currentTableNumber, currentPin, setTableNumber, setSettingPin, onClose, firebaseRefs }) => {
+    const [newTableNumber, setNewTableNumber] = useState(currentTableNumber);
+    const [newPin, setNewPin] = useState('');
+    const [confirmNewPin, setConfirmNewPin] = useState('');
+    const [pinError, setPinError] = useState('');
+    const [tableError, setTableError] = useState('');
+    
+    // 개별 저장 상태
+    const [tableStatus, setTableStatus] = useState(null); // { success: true, message: '저장 완료' }
+    const [pinStatus, setPinStatus] = useState(null);
+
+
+    // 상태 메시지 자동 숨김
+    useEffect(() => {
+        const clearTableStatus = setTimeout(() => setTableStatus(null), 2000);
+        return () => clearTimeout(clearTableStatus);
+    }, [tableStatus]);
+    
+    useEffect(() => {
+        const clearPinStatus = setTimeout(() => setPinStatus(null), 2000);
+        return () => clearTimeout(clearPinStatus);
+    }, [pinStatus]);
+
+
+    // 테이블 번호 저장 로직
+    const handleTableSave = async () => {
+        if (!newTableNumber || newTableNumber.length > 3 || newTableNumber === '0') {
+            setTableError('유효한 테이블 번호를 입력하세요.');
+            setTableStatus({ success: false, message: '저장 실패' });
+            return false;
+        }
+        setTableError('');
+
+        try {
+            const { db, appId, userId } = firebaseRefs;
+            if (!db || !userId) throw new Error("Firebase not initialized.");
+
+            const pinRef = doc(db, `artifacts/${appId}/users/${userId}/app_settings/kiosk_pin`);
+            await setDoc(pinRef, { tableNumber: newTableNumber, updated: serverTimestamp() }, { merge: true });
+            
+            setTableNumber(newTableNumber);
+            setTableStatus({ success: true, message: '테이블 번호 저장 완료' });
+            return true;
+        } catch (e) {
+            console.error("Error saving table number:", e);
+            setTableStatus({ success: false, message: '저장 중 오류 발생' });
+            return false;
+        }
+    };
+    
+    // 비밀번호 변경 로직
+    const handlePinChange = async () => {
+        if (newPin.length !== 4) {
+            setPinError('비밀번호는 4자리여야 합니다.');
+            setPinStatus({ success: false, message: '변경 실패' });
+            return false;
+        }
+        if (newPin !== confirmNewPin) {
+            setPinError('새 비밀번호와 확인이 일치하지 않습니다.');
+            setPinStatus({ success: false, message: '변경 실패' });
+            return false;
+        }
+        setPinError('');
+
+        try {
+            const { db, appId, userId } = firebaseRefs;
+            if (!db || !userId) throw new Error("Firebase not initialized.");
+
+            const pinRef = doc(db, `artifacts/${appId}/users/${userId}/app_settings/kiosk_pin`);
+            await setDoc(pinRef, { pin: newPin, updated: serverTimestamp() }, { merge: true });
+            
+            setSettingPin(newPin); // 부모 상태 업데이트
+            setNewPin('');
+            setConfirmNewPin('');
+            setPinError(null);
+            setPinStatus({ success: true, message: '비밀번호 변경 완료' });
+            return true;
+        } catch (e) {
+            console.error("Error changing PIN:", e);
+            setPinStatus({ success: false, message: '변경 중 오류 발생' });
+            return false;
+        }
+    };
+
+    return (
+        <div className="w-full h-full flex flex-col overflow-y-auto p-4 bg-gray-50">
+            <h2 className="text-4xl font-extrabold text-gray-800 border-b-4 border-gray-500 pb-3 mb-6 inline-block">
+                <Settings className="w-9 h-9 inline mr-2 text-gray-600" />
+                관리자 설정
+            </h2> 
+
+            {/* 1. 테이블 번호 설정 */}
+            <div className="bg-white p-6 rounded-xl shadow-md border mb-8 flex-shrink-0 relative">
+                
+                {/* 토스트 메시지 */}
+                {tableStatus && (
+                    <div 
+                        className={`absolute -top-10 right-4 p-2 rounded-lg text-sm font-semibold transition-opacity duration-300 ${
+                            tableStatus.success ? 'bg-green-500 text-white' : 'bg-red-500 text-white'
+                        }`}
+                    >
+                        {tableStatus.message}
+                    </div>
+                )}
+
+                <h3 className="text-2xl font-bold text-gray-700 mb-4 flex items-center">
+                    <Hash className="w-5 h-5 mr-2 text-red-500" />
+                    테이블 번호 설정
+                </h3>
+                <p className="text-gray-500 mb-2">현재 테이블 번호: <span className="font-extrabold text-red-600">{currentTableNumber}</span></p>
+                <div className="w-1/2">
+                    <SimpleInputWrapper
+                        value={newTableNumber}
+                        setter={setNewTableNumber}
+                        placeholder="새 테이블 번호 (예: 12)"
+                        maxLength={3}
+                        isError={!!tableError}
+                    />
+                    {tableError && <p className="text-red-500 text-sm mt-1">{tableError}</p>}
+                </div>
+                <button
+                    onClick={handleTableSave}
+                    className="mt-4 py-2 px-4 bg-blue-500 text-white rounded-lg font-bold hover:bg-blue-600 transition-colors"
+                >
+                    테이블 번호 저장
+                </button>
+            </div>
+
+            {/* 2. 비밀번호 변경 */}
+            <div className="bg-white p-6 rounded-xl shadow-md border mb-8 flex-shrink-0 relative">
+                
+                {/* 토스트 메시지 */}
+                {pinStatus && (
+                    <div 
+                        className={`absolute -top-10 right-4 p-2 rounded-lg text-sm font-semibold transition-opacity duration-300 ${
+                            pinStatus.success ? 'bg-green-500 text-white' : 'bg-red-500 text-white'
+                        }`}
+                    >
+                        {pinStatus.message}
+                    </div>
+                )}
+                
+                <h3 className="text-2xl font-bold text-gray-700 mb-4 flex items-center">
+                    <Lock className="w-5 h-5 mr-2 text-red-500" />
+                    관리자 비밀번호 재설정
+                </h3>
+                
+                <div className="space-y-4 w-1/2">
+                    <div className='mb-2'>
+                        <label className="block text-sm font-medium text-gray-700">새로운 비밀번호 (4자리)</label>
+                        <SimpleInputWrapper
+                            value={newPin}
+                            setter={setNewPin}
+                            placeholder="****"
+                            isPin={true}
+                            maxLength={4}
+                            isError={!!pinError && pinError !== '새 비밀번호와 확인이 일치하지 않습니다.'}
+                        />
+                    </div>
+                    
+                    <div className='mb-2'>
+                        <label className="block text-sm font-medium text-gray-700">새로운 비밀번호 확인</label>
+                        <SimpleInputWrapper
+                            value={confirmNewPin}
+                            setter={setConfirmNewPin}
+                            placeholder="****"
+                            isPin={true}
+                            maxLength={4}
+                            isError={!!pinError && pinError === '새 비밀번호와 확인이 일치하지 않습니다.'}
+                        />
+                    </div>
+                </div>
+                
+                {pinError && <p className="text-red-500 text-sm mt-2 font-semibold">{pinError}</p>}
+
+                <button
+                    onClick={handlePinChange}
+                    className="mt-6 py-2 px-4 bg-red-500 text-white rounded-lg font-bold hover:bg-red-600 transition-colors"
+                >
+                    비밀번호 변경
+                </button>
+            </div>
+            
+            {/* 3. 돌아가기 버튼 (하단 고정) */}
+            <div className="mt-auto pt-6 border-t border-gray-200">
+                <button
+                    onClick={onClose} // onClose는 setActiveUtility(null)을 호출하여 메인으로 돌아감
+                    className="w-full py-3 bg-gray-600 text-white text-lg font-bold rounded-xl shadow-lg hover:bg-gray-700 transition-colors"
+                >
+                    저장 없이 메인으로 돌아가기
+                </button>
+            </div>
+        </div>
+    );
+};
+
+
+/**
+ * 나의 누적 주문 통계 모달
+ */
+const OrderHistoryModal = ({ isVisible, orderHistory, onClose, currentTableNumber }) => {
+    if (!isVisible) return null;
+
+    // 1. 모든 주문 내역을 합산하여 메뉴별 누적 수량 및 금액 계산
+    const aggregatedItems = orderHistory.reduce((acc, order) => {
+        // order.items가 JSON 문자열일 수 있으므로 파싱을 시도하고, 실패하면 빈 배열로 처리합니다.
+        let items;
+        try {
+             // items가 이미 배열이거나, JSON 문자열일 경우 파싱
+            items = Array.isArray(order.items) ? order.items : (typeof order.items === 'string' ? JSON.parse(order.items) : []);
+        } catch (e) {
+            console.error("Failed to parse order items in modal:", e);
+            items = [];
+        }
+
+        items.forEach(item => {
+            if (acc[item.name]) {
+                acc[item.name].quantity += item.quantity;
+                acc[item.name].totalAmount += item.total;
+            } else {
+                acc[item.name] = {
+                    name: item.name,
+                    quantity: item.quantity,
+                    price: item.price,
+                    totalAmount: item.total,
+                };
+            }
+        });
+        return acc;
+    }, {});
+    
+    // 계산된 누적 아이템 목록 (배열 형태)
+    const accumulatedItemsList = Object.values(aggregatedItems).sort((a, b) => b.totalAmount - a.totalAmount);
+
+    // 2. 모든 주문 내역의 총 금액 합계 계산
+    const accumulatedTotal = orderHistory.reduce((sum, order) => sum + (order.totalAmount || 0), 0);
+    
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            {/* 모달 컨테이너: flex-col로 설정 */}
+            <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden shadow-2xl relative flex flex-col">
+                
+                {/* 닫기 버튼 */}
+                <button 
+                    onClick={onClose} 
+                    className="absolute top-4 right-4 bg-white p-2 rounded-full shadow-lg hover:bg-gray-100 transition-colors z-10"
+                >
+                    <X className="w-6 h-6 text-gray-700" />
+                </button>
+
+                {/* 모달 콘텐츠 (스크롤 가능 영역) */}
+                <div className="p-4 flex-grow flex flex-col overflow-hidden"> 
+                    <h2 className="text-3xl font-extrabold text-gray-800 border-b-4 border-blue-500 pb-2 mb-3"> 
+                        나의 누적 주문 통계 (테이블 {currentTableNumber}번)
+                    </h2>
+                    
+                    {accumulatedItemsList.length === 0 ? (
+                        <p className="text-lg text-gray-500 text-center py-16">아직 주문 완료 내역이 없습니다.</p>
+                    ) : (
+                        // 이 div가 실제 스크롤 영역이 되어야 함
+                        <div className="flex-1 overflow-y-auto space-y-1 pr-0.5 custom-scrollbar-y"> 
+                            
+                            {/* 테이블 헤더 - sticky와 z-index를 사용하여 리스트가 스크롤 되어도 헤더는 고정 */}
+                            <div className="flex font-bold text-gray-700 border-b-2 pb-1 sticky top-0 bg-gray-50 z-10 text-xs rounded-t-lg px-2 shadow-sm"> 
+                                <span className="w-[45%] flex items-center pl-1">
+                                    <Menu className="w-3 h-3 mr-1" /> 메뉴명
+                                </span>
+                                <span className="w-[15%] text-center flex items-center justify-center">
+                                    <Hash className="w-3 h-3 mr-0.5" /> 수량
+                                </span>
+                                <span className="w-[40%] text-right flex items-center justify-end pr-1">
+                                    <Tag className="w-3 h-3 mr-0.5" /> 누적 금액
+                                </span>
+                            </div>
+
+                            {/* 메뉴별 누적 리스트 */}
+                            {accumulatedItemsList.map((item, index) => (
+                                <div 
+                                    key={item.name} 
+                                    className="flex items-center p-2 bg-white rounded-lg border border-gray-200 hover:border-blue-300 transition-all shadow-sm" 
+                                >
+                                    {/* 메뉴명 */}
+                                    <span className="w-[45%] text-sm font-semibold text-gray-800 truncate"> 
+                                        {index + 1}. {item.name}
+                                    </span>
+                                    {/* 총 수량 */}
+                                    <span className="w-[15%] text-center text-base font-extrabold text-red-500"> 
+                                        {item.quantity}
+                                    </span>
+                                    {/* 누적 금액 */}
+                                    <span className="w-[40%] text-right text-sm font-bold text-gray-700"> 
+                                        {item.totalAmount.toLocaleString()}원
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+
+                {/* 누적 총액 표시 - 하단 고정 */}
+                <div className="bg-white p-3 border-t-4 border-red-500 rounded-b-xl shadow-inner flex-shrink-0">
+                    <div className="flex justify-between items-center">
+                        <span className="text-lg font-bold text-gray-700">전체 누적 총 금액 (테이블 {currentTableNumber}번)</span>
+                        <span className="text-2xl font-extrabold text-red-600">{accumulatedTotal.toLocaleString()}원</span>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1 text-right">총 {orderHistory.length}회 주문 내역 합산</p>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+
+/**
+ * 주문 목록 (오른쪽 사이드바)
+ */
+const OrderBasket = ({ order, updateQuantity, removeItem, totalAmount, totalItems, onOrderComplete, currentTableNumber }) => {
+  return (
+    // w-72 -> w-64로 축소 (약 1/4)
+    <div className="flex flex-col w-64 bg-white border-l border-gray-200 p-3 shadow-2xl flex-shrink-0"> {/* p-4 -> p-3로 축소, flex-shrink-0 추가 */}
+      <div className="flex justify-between items-center border-b pb-1.5 mb-2"> {/* pb-2 mb-3 -> pb-1.5 mb-2로 축소 */}
+        <h2 className="text-base font-bold text-gray-800 flex items-center"> {/* text-lg -> text-base로 축소 */}
+          <ShoppingCart className="w-4 h-4 mr-2 text-red-500" /> {/* 아이콘 유지 */}
+          주문 목록 (T-{currentTableNumber})
+        </h2>
+        <span className="text-xs text-gray-500">총 {totalItems}개</span> 
+        </div>
+
+      <div className="flex-grow overflow-y-auto mb-2 space-y-1.5 pr-0.5"> {/* mb-3 space-y-2 pr-1 -> mb-2 space-y-1.5 pr-0.5로 축소 */}
+        {order.length === 0 ? (
+          <div className="text-center py-6 text-gray-500 text-xs"> {/* 폰트/패딩 축소 */}
+            <p>메뉴를 선택하여 담아주세요.</p>
+          </div>
+        ) : (
+          order.map((item) => (
+            <div key={item.id} className="flex items-center justify-between p-1.5 border border-gray-100 rounded-lg shadow-sm"> {/* p-2 -> p-1.5로 축소 */}
+              <div className="flex-grow">
+                <p className="text-xs font-semibold text-gray-800 truncate">{item.name}</p> {/* text-sm -> text-xs로 축소 */}
+                <p className="text-xs text-red-500 mt-0.5">{(item.price * item.quantity).toLocaleString()}원</p>
+              </div>
+
+              <div className="flex items-center space-x-0.5"> {/* space-x-1 -> space-x-0.5로 축소 */}
+                <div className="flex items-center border border-gray-300 rounded-full">
+                    <button
+                        onClick={() => updateQuantity(item.id, -1)}
+                        className="p-0.5 text-gray-600 hover:bg-gray-100 rounded-l-full disabled:opacity-50" 
+                        // 최소 주문 수량 미만으로 줄이지 못하도록 수정
+                        disabled={item.quantity <= (item.minQuantity || 1)} 
+                    >
+                        <Minus className="w-3 h-3" /> {/* 아이콘 유지 */}
+                    </button>
+                    <span className="text-xs font-medium w-4 text-center">{item.quantity}</span> {/* 폰트 유지 */}
+                    <button
+                        onClick={() => updateQuantity(item.id, 1)}
+                        className="p-0.5 text-gray-600 hover:bg-gray-100 rounded-r-full"
+                    >
+                        <Plus className="w-3 h-3" /> {/* 아이콘 유지 */}
+                    </button>
+                </div>
+                <button onClick={() => removeItem(item.id)} className="text-gray-400 hover:text-red-500 p-0.5 rounded-full transition-colors">
+                  <X className="w-3 h-3" /> {/* 아이콘 유지 */}
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="border-t pt-2 space-y-1.5 flex-shrink-0"> {/* pt-3 space-y-2 -> pt-2 space-y-1.5로 축소, flex-shrink-0 추가 */}
+        <div className="flex justify-between font-medium text-gray-700">
+          <span className='text-sm'>총 금액 ({totalItems}개):</span> {/* text-base -> text-sm으로 축소 */}
+          <span className="text-lg font-extrabold text-red-600">{totalAmount.toLocaleString()}원</span> {/* text-xl -> text-lg로 축소 */}
+        </div>
+        <button
+          onClick={onOrderComplete} // 주문 완료 핸들러 연결
+          className={`w-full py-2 text-white text-base font-bold rounded-xl shadow-lg transition-all transform ${ // py-3 -> py-2, text-lg -> text-base로 축소
+            totalItems > 0
+              ? 'bg-red-500 hover:bg-red-600 active:scale-[0.99] shadow-red-400/50'
+              : 'bg-gray-400 cursor-not-allowed'
+          }`}
+          disabled={totalItems === 0}
+        >
+          {totalItems > 0 ? '주문 완료하기' : '메뉴를 담아주세요'}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+
+// ======================================================================
+// 5. MAIN APP (MODIFIED for Proportional Scaling)
+// ======================================================================
+
+// 기준 디자인 해상도 (예: 16:10 비율의 태블릿)
+const DESIGN_WIDTH = 1100; 
+const DESIGN_HEIGHT = 700; 
+
+const App = () => {
+  const [activeCategory, setActiveCategory] = useState(menuData[0].id);
+  const [activeUtility, setActiveUtility] = useState(null); 
+  const [showHistoryModal, setShowHistoryModal] = useState(false); 
+  const [showSettingsModal, setShowSettingsModal] = useState(false); 
+  const [order, setOrder] = useState([]);
+  const [selectedItem, setSelectedItem] = useState(null); 
+  const [showSuccessMessage, setShowSuccessMessage] = useState(false); 
+  const [callStaffMessage, setCallStaffMessage] = useState(null); 
+  const [orderHistory, setOrderHistory] = useState([]); 
+  const [isAuthReady, setIsAuthReady] = useState(false); 
+  
+    // Proportional Scaling State
+    const [scale, setScale] = useState(1);
+    const containerRef = useRef(null);
+
+  // 설정 관련 상태
+  const [settingPin, setSettingPin] = useState('0000'); 
+  const [tableNumber, setTableNumber] = useState('1'); 
+  const [authError, setAuthError] = useState(null); 
+
+  // 연속 터치 관련 상태
+  const [touchCount, setTouchCount] = useState(0);
+  const [lastTouchTime, setLastTouchTime] = useState(0);
+
+  const menuRef = useRef(null);
+  const categoryRefs = useRef({});
+
+  const hasOrder = order.length > 0;
+  
+  // Firebase 인스턴스 Ref (안정적인 참조를 위해 useRef 사용)
+  const firebaseRefs = useRef({ db: null, auth: null, userId: null, appId: null });
+
+
+    // 스케일 계산 로직 (화면 비율 유지)
+    const calculateScale = useCallback(() => {
+        if (containerRef.current) {
+            const viewportWidth = window.innerWidth;
+            const viewportHeight = window.innerHeight;
+            
+            // 패딩과 여백을 고려한 기준 크기
+            const paddingHorizontal = 64; // p-4 * 2 (body) + p-6 * 2 (kiosk container) * scale
+            const paddingVertical = 64;   // h-[90vh]에 상응하는 여백
+            
+            const targetWidth = DESIGN_WIDTH;
+            const targetHeight = DESIGN_HEIGHT;
+
+            // 실제 사용 가능한 영역 계산
+            const availableWidth = viewportWidth - paddingHorizontal;
+            const availableHeight = viewportHeight - paddingVertical;
+
+            // 너비와 높이 중 더 작은 비율을 선택하여 콘텐츠가 잘리지 않도록 함
+            const scaleX = availableWidth / targetWidth;
+            const scaleY = availableHeight / targetHeight;
+            
+            // 최소 스케일 (가장 제약이 큰 축에 맞춤)
+            const newScale = Math.min(scaleX, scaleY);
+            
+            // 최소 0.5 ~ 최대 1.05 사이로 제한 (너무 작거나 너무 커지는 것 방지)
+            setScale(Math.min(1.05, Math.max(0.5, newScale)));
+        }
+    }, []);
+
+    // 스케일 계산 useEffect
+    useEffect(() => {
+        calculateScale();
+        window.addEventListener('resize', calculateScale);
+        return () => window.removeEventListener('resize', calculateScale);
+    }, [calculateScale]);
+
+
+  // Firebase Initialization and Auth & Data Loading (안정화 로직)
+  useEffect(() => {
+    let unsubscribeAuth;
+    let unsubscribeHistory;
+    
+    const initializeAndLoadData = async () => {
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+        // 1. Firebase App 초기화
+        let app, firestore, firebaseAuth;
+        try {
+            app = initializeApp(firebaseConfig);
+            firestore = getFirestore(app);
+            firebaseAuth = getAuth(app);
+            firebaseRefs.current.appId = appId;
+            firebaseRefs.current.db = firestore;
+            firebaseRefs.current.auth = firebaseAuth;
+        } catch (error) {
+            console.error("Firebase App initialization failed:", error);
+            setAuthError("Firebase 초기화 실패. 관리자에게 문의하세요.");
+            setIsAuthReady(true);
+            return;
+        }
+        
+        // 2. 인증 처리 (Auth)
+        unsubscribeAuth = onAuthStateChanged(firebaseAuth, async (user) => {
+            let currentUserId;
+            try {
+                if (user) {
+                    currentUserId = user.uid;
+                } else if (typeof __initial_auth_token !== 'undefined') {
+                    const credential = await signInWithCustomToken(firebaseAuth, __initial_auth_token);
+                    currentUserId = credential.user.uid;
+                } else {
+                    const credential = await signInAnonymously(firebaseAuth);
+                    currentUserId = credential.user.uid;
+                }
+                firebaseRefs.current.userId = currentUserId; // userId Ref 업데이트
+            } catch (error) {
+                console.error("Firebase Auth failed:", error);
+                setAuthError("인증 실패. 서비스를 사용할 수 없습니다.");
+                setIsAuthReady(true);
+                return;
+            }
+            
+            // 3. 설정 데이터 로드 (PIN & TableNumber)
+            try {
+                const pinRef = doc(firestore, `artifacts/${appId}/users/${currentUserId}/app_settings/kiosk_pin`);
+                const pinSnap = await getDoc(pinRef);
+
+                if (pinSnap.exists()) {
+                    const settings = pinSnap.data();
+                    setSettingPin(settings.pin || '0000');
+                    setTableNumber(settings.tableNumber || '1');
+                } else {
+                    // PIN이 없으면 초기값 '0000' 및 '1'번 테이블 저장
+                    await setDoc(pinRef, { pin: '0000', tableNumber: '1', created: serverTimestamp() }, { merge: true });
+                    setSettingPin('0000');
+                    setTableNumber('1');
+                }
+            } catch (error) {
+                console.error("Failed to load/set initial settings:", error);
+                // 설정 로드 실패 시에도 앱은 계속 진행 (기본값 사용)
+            }
+
+            // 4. 주문 내역 리스너 설정 (currentUserId가 확보된 후에만 실행)
+            if (currentUserId) {
+                const historyCollectionRef = collection(firestore, `artifacts/${appId}/users/${currentUserId}/order_history`);
+                const q = query(historyCollectionRef); 
+    
+                unsubscribeHistory = onSnapshot(q, (snapshot) => {
+                    const history = snapshot.docs.map(doc => {
+                        const data = doc.data();
+                        // items를 JSON.parse하기 전에 데이터 유효성 검사
+                        let items = data.items;
+                        if (typeof items === 'string') {
+                            try {
+                                items = JSON.parse(items);
+                            } catch (e) {
+                                console.error("Failed to parse order items in history:", e);
+                                items = [];
+                            }
+                        }
+                        return ({
+                            id: doc.id,
+                            ...data,
+                            items: items, // 파싱된 아이템 또는 원본 배열 사용
+                            timestamp: data.timestamp && data.timestamp.toDate ? data.timestamp.toDate() : new Date(),
+                        });
+                    });
+                    history.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+                    setOrderHistory(history);
+                }, (error) => {
+                    console.error("Failed to fetch order history:", error);
+                });
+            }
+            
+            setIsAuthReady(true);
+        });
+    };
+
+    initializeAndLoadData();
+
+    // 클린업 함수: 리스너가 중복 등록되지 않도록 안전하게 해제
+    return () => {
+        if (unsubscribeAuth) unsubscribeAuth();
+        if (unsubscribeHistory) unsubscribeHistory();
+    };
+  }, []); // 빈 배열: 최초 1회만 실행
+
+  // 직원 호출 로직
+  const handleStaffCall = useCallback((request) => {
+      setCallStaffMessage(`[${request}] 요청이 접수되었습니다!`);
+      
+      const timer = setTimeout(() => {
+          setCallStaffMessage(null);
+      }, 2000);
+
+      return () => clearTimeout(timer);
+  }, []);
+
+  // 모달 열기/닫기
+  const openModal = useCallback((item) => {
+    setSelectedItem(item);
+  }, []);
+
+  const closeModal = useCallback(() => {
+    setSelectedItem(null);
+  }, []);
+  
+  // 주문 내역 모달 열기/닫기
+  const openHistoryModal = useCallback(() => {
+      setShowHistoryModal(true);
+      setActiveUtility(null); // 유틸리티 상태 해제
+  }, []);
+
+  const closeHistoryModal = useCallback(() => {
+      setShowHistoryModal(false);
+  }, []);
+  
+  // 설정 모달 열기/닫기
+  const openSettingsModal = useCallback(() => {
+      setShowSettingsModal(true);
+      setActiveUtility(null);
+  }, []);
+
+  const closeSettingsModal = useCallback(() => {
+      setShowSettingsModal(false);
+  }, []);
+  
+  // PIN 인증 성공 핸들러
+  const handlePinEntrySuccess = useCallback(() => {
+      closeSettingsModal();
+      setActiveUtility('settings'); // 설정 화면 진입 (메인 영역 대체)
+  }, [closeSettingsModal]);
+
+  // 연속 터치 감지 로직
+  const handleLogoClick = useCallback(() => {
+      const now = Date.now();
+      const timeDiff = now - lastTouchTime;
+
+      if (timeDiff < 1000) {
+          const newCount = touchCount + 1;
+          setTouchCount(newCount);
+          setLastTouchTime(now);
+
+          if (newCount === 3) {
+              setTouchCount(0); 
+              openSettingsModal(); // PIN 입력 모달 열기
+          }
+      } else {
+          setTouchCount(1);
+          setLastTouchTime(now);
+      }
+  }, [touchCount, lastTouchTime, openSettingsModal]);
+
+
+  // 주문 목록 업데이트 로직 (함수 유지)
+  const addToOrder = useCallback((item, quantityToAdd) => {
+    setOrder(prevOrder => {
+      // item.id 대신 item.name + item.id를 조합하여 고유 키를 사용하면 옵션이 추가될 경우 유리하지만, 
+      // 현재는 item.id가 유일하다고 가정하고 유지합니다.
+      const existingItem = prevOrder.find(o => o.id === item.id);
+      if (existingItem) {
+        return prevOrder.map(o =>
+          o.id === item.id ? { ...o, quantity: o.quantity + quantityToAdd } : o
+        );
+      }
+      return [...prevOrder, { ...item, quantity: quantityToAdd }];
+    });
+  }, []);
+
+  const updateQuantity = useCallback((id, delta) => {
+    setOrder(prevOrder => {
+      const updatedOrder = prevOrder.map(item =>
+        item.id === id ? { ...item, quantity: item.quantity + delta } : item
+      ).filter(item => {
+        const minQ = item.minQuantity || 1;
+        return item.quantity > 0 && item.quantity >= minQ;
+      });
+      return updatedOrder;
+    });
+  }, []);
+
+  const removeItem = useCallback((id) => {
+    setOrder(prevOrder => prevOrder.filter(item => item.id !== id));
+  }, []);
+  
+  // ======================================================================
+  // 계산 로직: handleOrderComplete보다 먼저 정의되어야 함
+  // ======================================================================
+  // 총 금액 및 개수 계산
+  const totalAmount = order.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const totalItems = order.reduce((sum, item) => sum + item.quantity, 0);
+
+  // 주문 완료 처리 로직 (Firestore 저장 추가)
+  const handleOrderComplete = useCallback(async () => {
+    if (order.length === 0 || !firebaseRefs.current.db || !firebaseRefs.current.userId) return;
+
+    const orderDetails = {
+        tableId: tableNumber, // 동적 테이블 번호 사용
+        items: JSON.stringify(order.map(item => ({ // 배열을 JSON 문자열로 저장
+            name: item.name,
+            price: item.price,
+            quantity: item.quantity,
+            total: item.price * item.quantity,
+            id: item.id // 아이템 ID 추가
+        }))),
+        totalAmount: totalAmount, 
+        totalItems: totalItems,   
+        timestamp: serverTimestamp(),
+        userId: firebaseRefs.current.userId,
+    };
+
+    try {
+        const appId = firebaseRefs.current.appId;
+        const db = firebaseRefs.current.db;
+        const userId = firebaseRefs.current.userId;
+
+        const historyCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/order_history`);
+        await addDoc(historyCollectionRef, orderDetails);
+        
+        // 1. 주문 목록 비우기
+        setOrder([]);
+
+        // 2. 성공 메시지 표시
+        setShowSuccessMessage(true);
+
+        // 3. 2초 후 메시지 숨기기
+        const timer = setTimeout(() => {
+            setShowSuccessMessage(false);
+        }, 2000);
+
+        return () => clearTimeout(timer);
+
+    } catch (e) {
+        console.error("Error adding document: ", e);
+    }
+  }, [order, totalAmount, totalItems, tableNumber]); 
+
+
+  // 카테고리 스크롤 동기화 로직 (개선된 로직 적용)
+  useEffect(() => {
+    if (activeUtility) {
+      return;
+    }
+    
+    // 헤더/상단 여백을 고려한 기준선 (픽셀 값)
+    const ACTIVATION_OFFSET = 100;
+    
+    const observerOptions = {
+      root: menuRef.current,
+      // rootMargin: 상단 100px 아래 영역을 기준으로 교차 감지 시작
+      rootMargin: `-${ACTIVATION_OFFSET}px 0px 0px 0px`, 
+      threshold: 0, // 교차(isIntersecting)만 확인
+    };
+
+    const observer = new IntersectionObserver((entries) => {
+        if (activeUtility) return;
+
+        let topCategory = null;
+        let minDistanceToOffset = Infinity; // ACTIVATION_OFFSET에 가장 가까운 항목 찾기
+
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                // entry.target.offsetTop: 스크롤 컨테이너(menuRef.current) 내부에서의 요소 상단 위치
+                // menuRef.current.scrollTop: 현재 스크롤 위치
+                const offsetTopRelativeToScrollContainer = entry.target.offsetTop - menuRef.current.scrollTop;
+                
+                // 1. 카테고리가 ACTIVATION_OFFSET(100px) 선 위에 있는 경우 (스크롤해서 위로 올라간 경우)
+                if (offsetTopRelativeToScrollContainer <= ACTIVATION_OFFSET) {
+                    // 이 카테고리는 이미 기준선을 넘었거나 걸쳐 있음. 무시.
+                    return; 
+                }
+                
+                // 2. 카테고리가 ACTIVATION_OFFSET 아래에 있고, 화면에 진입 중인 경우
+                // 100px 선으로부터 요소의 상단까지의 거리 (양수 값, 작을수록 가까움)
+                const distance = offsetTopRelativeToScrollContainer - ACTIVATION_OFFSET;
+                
+                if (distance < minDistanceToOffset) {
+                    minDistanceToOffset = distance;
+                    topCategory = entry.target.id;
+                }
+            }
+        });
+        
+        // topCategory가 발견되지 않으면, 현재 가장 상위에 있는 요소를 찾기 위해 
+        // boundingClientRect를 사용한 보조 로직을 실행
+        if (!topCategory && menuRef.current) {
+            let visibleCategories = [];
+            Object.values(categoryRefs.current).forEach(ref => {
+                if (ref) {
+                    const rect = ref.getBoundingClientRect();
+                    // 스크롤 컨테이너 상단(menuRef)을 기준으로 카테고리가 100px 아래 영역에 보이는지 확인
+                    if (rect.top > 0 && rect.top < menuRef.current.offsetHeight) {
+                        visibleCategories.push({
+                            id: ref.id,
+                            top: rect.top
+                        });
+                    }
+                }
+            });
+            
+            // visibleCategories 중 가장 상단(top 값이 가장 작은) 카테고리를 선택
+            if (visibleCategories.length > 0) {
+                visibleCategories.sort((a, b) => a.top - b.top);
+                topCategory = visibleCategories[0].id;
+            }
+        }
+        
+        // 최종적으로 활성 카테고리 업데이트
+        if (topCategory) {
+            setActiveCategory(topCategory);
+        }
+        
+    }, observerOptions);
+
+    // .current가 유효할 때만 observer 등록
+    if (menuRef.current) {
+        Object.values(categoryRefs.current).forEach(ref => {
+          if (ref) {
+            observer.observe(ref);
+          }
+        });
+    }
+
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [menuRef.current, activeUtility]); 
+
+  const scrollToCategory = useCallback((id) => {
+    const element = categoryRefs.current[id];
+    if (element) {
+        // 스크롤 시 카테고리 제목이 헤더 아래로 오도록 조정
+        const headerOffset = 100; // 헤더 높이 + 패딩
+        const elementPosition = element.offsetTop - menuRef.current.offsetTop;
+        menuRef.current.scrollTop = elementPosition - headerOffset;
+        setActiveCategory(id); 
+    }
+  }, []);
+  
+  // 유틸리티 메뉴 클릭 핸들러
+  const handleUtilityClick = useCallback((utilityId) => {
+      if (utilityId === 'history') {
+          setShowHistoryModal(true); // 주문 내역은 모달로 띄움
+          setActiveUtility(null); 
+      } else {
+          setActiveUtility(prevId => prevId === utilityId ? null : utilityId);
+          if (utilityId) {
+              setActiveCategory(null); // 유틸리티 선택 시 카테고리 선택 해제
+          } else {
+              setActiveCategory(menuData[0].id); 
+          }
+      }
+  }, []);
+
+
+  // 알림 메시지 내용 설정
+  let alertMessage = '';
+  let alertIcon = CheckCircle;
+  let alertIconColor = 'text-green-500';
+
+  if (callStaffMessage) {
+    alertMessage = callStaffMessage;
+    alertIcon = Bell;
+    alertIconColor = 'text-yellow-500';
+  } else if (showSuccessMessage) {
+    alertMessage = '주문이 완료되었습니다!';
+    alertIcon = CheckCircle;
+    alertIconColor = 'text-green-500';
+  }
+
+  // 메인 컨텐츠 컴포넌트 결정
+  const renderMainContent = () => {
+      // 유틸리티 상세 화면 렌더링
+      if (activeUtility === 'staff') {
+          return (
+            <div className="flex-1 p-6 overflow-y-auto">
+              <StaffCallDetail handleStaffCall={handleStaffCall} />
+            </div>
+          );
+      }
+      if (activeUtility === 'settings') {
+           return (
+            <div className="flex-1 p-6 overflow-y-auto">
+              <SettingsDetail 
+                currentTableNumber={tableNumber}
+                currentPin={settingPin}
+                setTableNumber={setTableNumber}
+                setSettingPin={setSettingPin}
+                onClose={() => setActiveUtility(null)} // 유틸리티 해제
+                firebaseRefs={firebaseRefs.current} // Firebase Refs 전달
+              />
+            </div>
+          );
+      }
+      
+      // 기본 메뉴 카테고리 렌더링
+      return (
+        <main 
+            ref={menuRef} 
+            className={`transition-all duration-300 flex-1 p-6 overflow-y-auto custom-scrollbar`}
+        >
+            {menuData.map(category => (
+                <section key={category.id} id={category.id} className="mb-10"
+                    ref={el => categoryRefs.current[category.id] = el}
+                >
+                    <h2 className="text-3xl font-extrabold text-gray-800 border-b-4 border-red-500 pb-2 mb-6 inline-block">
+                        {category.name}
+                    </h2>
+                    <div 
+                        className={`grid gap-6 grid-cols-1`} // 한 줄에 하나씩 보이도록 grid-cols-1 유지
+                    > 
+                        {category.items.map(item => (
+                            <MenuItemCard 
+                                key={item.id} 
+                                item={item} 
+                                onOpenModal={openModal} 
+                                onQuickAdd={(i) => addToOrder(i, i.minQuantity || 1)} // 즉시 추가 로직
+                            /> 
+                        ))}
+                    </div>
+                </section>
+            ))}
+            <div className="h-40"></div>
+        </main>
+      );
+  };
+
+  // 인증이 완료되지 않았으면 로딩 화면 표시
+  if (!isAuthReady) {
+      return (
+          <div className="min-h-screen bg-gray-100 flex items-center justify-center">
+              <div className="text-xl font-semibold text-gray-600">데이터 로딩 중...</div>
+              
+          </div>
+      );
+  }
+  
+  // Firebase 에러 발생 시 에러 화면 표시
+  if (authError) {
+    return (
+      <div className="min-h-screen bg-red-100 flex flex-col items-center justify-center p-8 text-center">
+        <Lock className="w-16 h-16 text-red-500 mb-4" />
+        <h2 className="text-2xl font-bold text-red-700 mb-2">시스템 오류 발생</h2>
+        <p className="text-lg text-red-600 mb-6">{authError}</p>
+        <p className="text-gray-500">잠시 후 다시 시도하거나, 매장 직원에게 문의해 주세요.</p>
+        <p className='text-xs text-gray-400 mt-4'>Error ID: {firebaseRefs.current.userId || 'N/A'}</p>
+      </div>
+    );
+  }
+
+
+  // ======================================================================
+  // 렌더링
+  // ======================================================================
+  return (
+    // Scaling Wrapper: 뷰포트 크기에 맞춰 전체 콘텐츠를 비례하여 축소/확대
+    <div 
+        ref={containerRef}
+        className="min-h-screen bg-gray-100 p-4 font-sans flex items-center justify-center overflow-hidden" 
+        style={{ 
+            transform: `scale(${scale})`, 
+            transformOrigin: 'top center',
+            // 스케일된 콘텐츠가 중앙에 유지되도록 가상의 크기를 제공
+            width: `${DESIGN_WIDTH}px`,
+            height: `${DESIGN_HEIGHT}px`,
+            // 뷰포트 중앙 정렬을 위해 마진 자동 계산
+            margin: '0 auto',
+            position: 'relative',
+        }}
+    >
+      {/* Kiosk Tablet Container - 고정 디자인 크기 사용 */}
+      <div 
+        className="bg-white rounded-3xl shadow-2xl p-6 flex flex-col overflow-hidden border-8 border-gray-900"
+        style={{
+            width: `${DESIGN_WIDTH}px`,
+            height: `${DESIGN_HEIGHT}px`,
+        }}
+        >
+        
+        {/* Header */}
+        <header className="flex justify-between items-center pb-4 border-b border-gray-200 mb-4 flex-shrink-0">
+            <h1 
+                className="text-3xl font-extrabold text-red-600 cursor-pointer select-none" 
+                onClick={handleLogoClick} 
+            >
+                돼랑이네 장삼이
+            </h1>
+            <div className='text-sm text-gray-500'>
+                <p>테이블 {tableNumber}번 | 사용자 ID: {firebaseRefs.current.userId || 'Error: No User ID'}</p>
+                <p className='text-right'>주문 시간: {new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}</p>
+            </div>
+        </header>
+
+        {/* Main Content Area */}
+        <div className="flex flex-1 overflow-hidden">
+          
+          {/* 1. Left Sidebar (Categories + Utility) - w-36으로 확장됨 */}
+          <div className="w-36 flex flex-col bg-gray-50 border-r border-gray-200 shadow-inner flex-shrink-0"> 
+            
+            {/* Main Menu Categories (스크롤 가능 영역) */}
+            <CategoryList 
+                activeCategory={activeCategory} 
+                menuData={menuData} 
+                scrollToCategory={scrollToCategory} 
+                onUtilityClick={handleUtilityClick}
+            />
+            
+            {/* Utility Menu Buttons (하단 고정) */}
+            <div className="p-2 border-t border-gray-200 flex space-x-1 justify-between mt-auto flex-shrink-0"> 
+                <button
+                    onClick={() => handleUtilityClick('staff')}
+                    className={`flex-1 flex flex-col items-center justify-center p-1.5 rounded-xl text-xs font-semibold transition-all duration-200 ease-in-out ${ 
+                        activeUtility === 'staff'
+                        ? 'bg-yellow-500 text-white shadow-lg shadow-yellow-300 transform scale-[1.02]'
+                        : 'text-gray-600 hover:bg-yellow-100 hover:text-yellow-600'
+                    }`}
+                >
+                    <Bell className="w-4 h-4" /> 
+                    <span>호출</span> 
+                </button>
+
+                <button
+                    onClick={() => handleUtilityClick('history')}
+                    className={`flex-1 flex flex-col items-center justify-center p-1.5 rounded-xl text-xs font-semibold transition-all duration-200 ease-in-out ${ 
+                        showHistoryModal
+                        ? 'bg-blue-500 text-white shadow-lg shadow-blue-300 transform scale-[1.02]'
+                        : 'text-gray-600 hover:bg-blue-100 hover:hover:text-blue-600'
+                    }`}
+                >
+                    <History className="w-4 h-4" /> 
+                    <span>내역</span> 
+                </button>
+            </div>
+          </div>
+
+          {/* 2. Main Content Area (메뉴 or 유틸리티 상세 화면) */}
+          {renderMainContent()}
+          
+          {/* 3. Order Basket (Right) - 항상 표시 */}
+          <OrderBasket 
+            order={order} 
+            updateQuantity={updateQuantity} 
+            removeItem={removeItem} 
+            totalAmount={totalAmount}
+            totalItems={totalItems}
+            onOrderComplete={handleOrderComplete} 
+            currentTableNumber={tableNumber}
+          />
+
+        </div>
+        
+      </div>
+      
+      {/* 모달은 스케일링 컨테이너 외부에 유지 */}
+      <MenuDetailModal 
+        item={selectedItem} 
+        onClose={closeModal} 
+        onAddToOrder={addToOrder}
+      />
+
+      <OrderHistoryModal
+        isVisible={showHistoryModal}
+        orderHistory={orderHistory}
+        onClose={closeHistoryModal}
+        currentTableNumber={tableNumber}
+      />
+
+      <PinEntryModal
+        isVisible={showSettingsModal}
+        currentPin={settingPin}
+        onVerify={handlePinEntrySuccess}
+        onClose={closeSettingsModal}
+      />
+
+      <SuccessModal 
+        isVisible={showSuccessMessage || callStaffMessage} 
+        message={alertMessage}
+        icon={alertIcon}
+        iconColor={alertIconColor}
+      />
+    </div>
+  );
+};
+
+// ======================================================================
+// 6. Custom Scrollbar Styling (Inline CSS for Tailwind compatibility)
+// ======================================================================
+const Style = () => (
+    <style jsx="true">{`
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 8px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #cbd5e1; /* slate-400 */
+            border-radius: 10px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8; /* slate-500 */
+        }
+        /* 주문 내역 스크롤바 */
+        .custom-scrollbar-y::-webkit-scrollbar {
+            width: 5px;
+        }
+        .custom-scrollbar-y::-webkit-scrollbar-thumb {
+            background: #94a3b8; /* slate-400 */
+            border-radius: 10px;
+        }
+    `}</style>
+);
+
+export default () => (
+    <>
+        <Style />
+        <App />
+    </>
+);
